@@ -1,5 +1,7 @@
 import struct
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import rannirune
 
@@ -13,6 +15,18 @@ def tpf(payload: bytes = b"DDS " + bytes(124)) -> bytes:
 
 
 class FormatTests(unittest.TestCase):
+    def test_omitting_oodle_uses_elden_ring_steam_install(self):
+        expected_library = (
+            r"D:\Games\Steam\steamapps\common\ELDEN RING\Game\oo2core_6_win64.dll"
+        )
+        with patch.dict("os.environ", {"ProgramFiles(x86)": r"D:\Games"}, clear=True):
+            with patch("sys.argv", ["rannirune.py", "input.tpf.dcx"]):
+                with patch("rannirune.convert") as convert:
+                    self.assertEqual(rannirune.main(), 0)
+        convert.assert_called_once_with(
+            Path("input.tpf.dcx"), Path("input.png"), expected_library
+        )
+
     def test_extracts_dds_at_entry_offset(self):
         self.assertEqual(rannirune.extract_dds(tpf()), b"DDS " + bytes(124))
 

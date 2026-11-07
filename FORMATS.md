@@ -14,9 +14,12 @@ python rannirune.py 00_solo-tpfbdt\MENU_Knowledge_00001.tpf.dcx --oodle C:\path\
 By default the PNG is written next to the input, replacing `.tpf.dcx` with
 `.png`. Use `-o C:\path\to\output.png` to select another destination. The
 destination is overwritten if it already exists. `--oodle` can be omitted if
-`OODLE_LIBRARY` names the library or the library is discoverable by the system
-loader. The library must match the Python process architecture. Errors are
-reported on stderr with a nonzero exit status.
+`OODLE_LIBRARY` names the library. Otherwise the default is
+`%ProgramFiles(x86)%\Steam\steamapps\common\ELDEN RING\Game\oo2core_6_win64.dll`
+(with `C:\Program Files (x86)` used if `ProgramFiles(x86)` is unset). Use
+`--oodle` or `OODLE_LIBRARY` for a different Steam library location. The
+library must match the Python process architecture. Errors are reported on
+stderr with a nonzero exit status.
 
 ## Observed format stack
 

@@ -15,6 +15,19 @@ from PIL import Image, UnidentifiedImageError
 MAX_DECOMPRESSED_SIZE = 512 * 1024 * 1024
 
 
+def default_oodle_library() -> str:
+    install_root = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    return str(
+        Path(install_root)
+        / "Steam"
+        / "steamapps"
+        / "common"
+        / "ELDEN RING"
+        / "Game"
+        / "oo2core_6_win64.dll"
+    )
+
+
 class FormatError(ValueError):
     """The input is invalid or uses an unsupported format."""
 
@@ -96,7 +109,7 @@ def main() -> int:
     parser.add_argument("input", type=Path, help="input .tpf.dcx file")
     parser.add_argument("-o", "--output", type=Path,
                         help="output PNG (default: input name without .tpf.dcx)")
-    parser.add_argument("--oodle", default=os.environ.get("OODLE_LIBRARY", "oo2core_6_win64.dll"),
+    parser.add_argument("--oodle", default=os.environ.get("OODLE_LIBRARY", default_oodle_library()),
                         help="path to the Oodle library (or set OODLE_LIBRARY)")
     args = parser.parse_args()
     name = args.input.name
