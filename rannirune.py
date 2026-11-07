@@ -45,8 +45,8 @@ def decompress_dcx(data: bytes, library: str) -> bytes:
     raw_size, compressed_size = struct.unpack_from(">II", data, 28)
     if raw_size == 0 or raw_size > MAX_DECOMPRESSED_SIZE:
         raise FormatError("invalid or excessive DCX uncompressed size")
-    if compressed_size == 0 or compressed_size != len(data) - 76:
-        raise FormatError("DCX compressed size does not match the file")
+    if compressed_size == 0 or compressed_size > len(data) - 76:
+        raise FormatError("DCX compressed size exceeds the data in the file")
 
     try:
         dll = ctypes.CDLL(library)
@@ -113,6 +113,23 @@ def convert(source: Path, destination: Path, library: str) -> None:
         raise FormatError(f"cannot decode DDS or write PNG: {exc}") from exc
 
 
+def decompress_binder(source: Path, destination: Path, library: str) -> None:
+    if source.resolve() == destination.resolve():
+        raise FormatError("input and output must be different files")
+    if destination.exists():
+        raise FormatError(f"output already exists; skipping: {destination}")
+    binder = decompress_dcx(source.read_bytes(), library)
+    if not binder.startswith(b"BND4"):
+        raise FormatError("decompressed file is not a BND4 binder")
+    try:
+        with destination.open("xb") as file:
+            file.write(binder)
+    except FileExistsError as exc:
+        raise FormatError(
+            f"output already exists; skipping: {destination}"
+        ) from exc
+
+
 def convert_directory(source_dir: Path, output_dir: Path, library: str) -> int:
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -123,13 +140,19 @@ def convert_directory(source_dir: Path, output_dir: Path, library: str) -> int:
 
     failed = False
     for source in sources:
-        if not source.name.lower().endswith(".tpf.dcx"):
+        lower_name = source.name.lower()
+        if lower_name.endswith(".tpf.dcx"):
+            destination = output_dir / (source.name[:-8] + ".png")
+            convert_file = convert
+        elif lower_name.endswith(".matbinbnd.dcx"):
+            destination = output_dir / source.name[:-4]
+            convert_file = decompress_binder
+        else:
             print(f"rannirune: {source}: unsupported file format; skipping", file=sys.stderr)
             failed = True
             continue
-        destination = output_dir / (source.name[:-8] + ".png")
         try:
-            convert(source, destination, library)
+            convert_file(source, destination, library)
         except (OSError, FormatError) as exc:
             print(f"rannirune: {source}: {exc}", file=sys.stderr)
             failed = True
@@ -142,18 +165,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="input .tpf.dcx file or directory of files")
     parser.add_argument("-o", "--output", type=Path,
-                        help="output PNG, or output directory when input is a directory")
+                        help="output file, or output directory when input is a directory")
     parser.add_argument("--oodle", default=os.environ.get("OODLE_LIBRARY", default_oodle_library()),
                         help="path to the Oodle library (or set OODLE_LIBRARY)")
     args = parser.parse_args()
     if args.input.is_dir():
         return convert_directory(args.input, args.output or args.input, args.oodle)
     name = args.input.name
-    if not name.lower().endswith(".tpf.dcx"):
-        parser.error("input must have a .tpf.dcx extension")
-    output = args.output or args.input.with_name(name[:-8] + ".png")
+    lower_name = name.lower()
+    if lower_name.endswith(".tpf.dcx"):
+        output = args.output or args.input.with_name(name[:-8] + ".png")
+        convert_file = convert
+    elif lower_name.endswith(".matbinbnd.dcx"):
+        output = args.output or args.input.with_name(name[:-4])
+        convert_file = decompress_binder
+    else:
+        parser.error("input must be a .tpf.dcx or .matbinbnd.dcx file")
     try:
-        convert(args.input, output, args.oodle)
+        convert_file(args.input, output, args.oodle)
     except (OSError, FormatError) as exc:
         print(f"rannirune: {exc}", file=sys.stderr)
         return 1

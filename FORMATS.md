@@ -5,7 +5,7 @@
 Install Python 3 and the dependency with `python -m pip install -r requirements.txt`.
 An Oodle library compatible with the input's KRAK stream is also required; it is
 not distributed here. Use a library you are entitled to use. For the supplied
-file, `oo2core_6_win64.dll` was successfully used on 64-bit Windows:
+texture, `oo2core_6_win64.dll` was successfully used on 64-bit Windows:
 
 ```powershell
 python rannirune.py 00_solo-tpfbdt\MENU_Knowledge_00001.tpf.dcx --oodle C:\path\to\oo2core_6_win64.dll
@@ -16,8 +16,10 @@ By default the PNG is written next to the input, replacing `.tpf.dcx` with
 failed files are reported and processing continues. For directory input, use
 `-o C:\path\to\output-folder` to choose the output directory. For a single
 file, use `-o C:\path\to\output.png` to choose the destination. Existing
-outputs are never overwritten and are reported as skipped. `--oodle` can be
-omitted if `OODLE_LIBRARY` names the library. Otherwise the default is
+outputs are never overwritten and are reported as skipped. A
+`.matbinbnd.dcx` file is decompressed to its BND4 binder payload, with the
+`.dcx` suffix removed; this does not convert its contents to an image. `--oodle`
+can be omitted if `OODLE_LIBRARY` names the library. Otherwise the default is
 `%ProgramFiles(x86)%\Steam\steamapps\common\ELDEN RING\Game\oo2core_6_win64.dll`
 (with `C:\Program Files (x86)` used if `ProgramFiles(x86)` is unset). Use
 `--oodle` or `OODLE_LIBRARY` for a different Steam library location. The
@@ -26,7 +28,7 @@ stderr with a nonzero exit status.
 
 ## Observed format stack
 
-These notes describe the supplied file and the subset this converter handles,
+These notes describe the supplied files and the subset this converter handles,
 not a complete specification of any of the formats. DCX and TPF are container
 formats; DDS is a texture format. Multi-texture TPFs, console texture layouts,
 and other DCX compression methods are not supported.
@@ -39,7 +41,17 @@ and compressed byte counts at `0x1c` and `0x20`. `DCP\0KRAK` at `0x24`
 identifies Oodle KRAK compression. `DCA\0` occurs at `0x44`; the compressed
 stream starts at `0x4c` and runs to the end of the file. The converter checks
 this header layout and both sizes, then calls `OodleLZ_Decompress`. The
-uncompressed size is capped at 512 MiB.
+uncompressed size is capped at 512 MiB. The declared compressed byte count
+cannot exceed the remaining file data; any trailing bytes outside that payload
+are ignored.
+
+### BND4 material binder
+
+`samples/allmaterial.matbinbnd.dcx` decompresses to a `BND4` binder. Its
+declared Oodle payload is 9 bytes shorter than the bytes remaining after the
+DCX header, so those trailing bytes are not passed to Oodle. This is a material
+container, not a texture file; the program preserves its decompressed BND4
+payload rather than attempting to create a PNG.
 
 ### TPF
 

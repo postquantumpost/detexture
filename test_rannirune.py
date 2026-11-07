@@ -1,3 +1,4 @@
+import ctypes
 import contextlib
 import io
 import struct
@@ -29,6 +30,44 @@ class FormatTests(unittest.TestCase):
         convert.assert_called_once_with(
             Path("input.tpf.dcx"), Path("input.png"), expected_library
         )
+
+    def test_matbinbnd_dcx_uses_declared_compressed_size(self):
+        source = Path("samples/allmaterial.matbinbnd.dcx")
+        data = source.read_bytes()
+        compressed_size = struct.unpack_from(">I", data, 32)[0]
+        self.assertEqual(len(data) - 76 - compressed_size, 9)
+
+        class FakeDecompress:
+            def __call__(self, source, source_size, destination, destination_size,
+                         *args):
+                self.source_size = source_size
+                ctypes.memmove(destination, b"BND4" + bytes(destination_size - 4),
+                               destination_size)
+                return destination_size
+
+        decompress = FakeDecompress()
+
+        class FakeLibrary:
+            OodleLZ_Decompress = decompress
+
+        with patch("rannirune.ctypes.CDLL", return_value=FakeLibrary()):
+            output = rannirune.decompress_dcx(data, "unused")
+
+        self.assertEqual(decompress.source_size, compressed_size)
+        self.assertEqual(output[:4], b"BND4")
+
+    def test_decompresses_matbinbnd_to_bnd4_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "allmaterial.matbinbnd.dcx"
+            destination = Path(temp_dir) / "allmaterial.matbinbnd"
+            source.write_bytes(b"compressed")
+            with patch("rannirune.decompress_dcx", return_value=b"BND4payload"):
+                rannirune.decompress_binder(source, destination, "unused")
+            self.assertEqual(destination.read_bytes(), b"BND4payload")
+            with patch("rannirune.decompress_dcx", return_value=b"BND4new"):
+                with self.assertRaisesRegex(rannirune.FormatError, "already exists"):
+                    rannirune.decompress_binder(source, destination, "unused")
+            self.assertEqual(destination.read_bytes(), b"BND4payload")
 
     def test_existing_output_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as temp_dir:
