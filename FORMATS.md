@@ -35,11 +35,17 @@ can be omitted if `OODLE_LIBRARY` names the library. Otherwise the default is
 library must match the Python process architecture. Errors are reported on
 stderr with a nonzero exit status.
 
+Multi-texture TPFs produce one image per entry, with zero-based suffixes such
+as `name_0.png`, `name_1.png`, and `name_2.png`. A custom `-o output.png`
+becomes `output_0.png`, etc. Single-texture files keep their existing output
+name. An existing output, invalid entry, or unsupported DDS format is reported
+without stopping the remaining textures or files.
+
 ## Observed format stack
 
 These notes describe the supplied files and the subset this converter handles,
 not a complete specification of any of the formats. DCX and TPF are container
-formats; DDS is a texture format. Multi-texture TPFs, console texture layouts,
+formats; DDS is a texture format. Console texture layouts
 and other DCX compression methods are not supported.
 
 ### DCX
@@ -69,8 +75,10 @@ little-endian integers: the texture count is at `0x08`, platform byte at
 `0x0c` (zero for PC), and the first entry at `0x10` begins with the data offset
 and byte size. The observed entry also contains format byte `0x66`, one mip
 level, and a UTF-16LE texture name. For the supplied file the entry points to
-one embedded DDS at `0x4e`. The converter requires one PC texture and uses the
-entry's offset and size, rather than searching for a magic string.
+one embedded DDS at `0x4e`. The observed multi-texture PC files have 20-byte
+entries starting at `0x10`. The converter uses each entry's offset and size
+rather than searching for a magic string. Texture entries with nonzero flags
+are currently unsupported.
 
 ### DDS and PNG
 
@@ -79,4 +87,7 @@ The embedded data begins with `DDS ` and has a standard DDS header with a
 98 (`BC7_UNORM`) and one mip level. Pillow decodes the top-level DDS image,
 including BC7, and writes an RGBA PNG. Other embedded DDS variants depend on
 Pillow's decoder support; this program does not interpret TPF format metadata
-or convert console-specific data.
+or convert console-specific data. DXGI format 72 (`BC1_UNORM_SRGB`) uses
+the same block encoding as BC1 UNORM; the in-memory DDS header is normalized
+for Pillow, preserving the decoded channel values without applying a gamma
+transform. Other unsupported DDS formats are reported instead of crashing.

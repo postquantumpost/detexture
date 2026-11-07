@@ -72,16 +72,26 @@ def decompress_dcx(data: bytes, library: str) -> bytes:
     return output.raw
 
 
-def extract_dds(data: bytes) -> bytes:
-    if len(data) < 36 or data[:4] != b"TPF\0":
+def texture_count(data: bytes) -> int:
+    if len(data) < 16 or data[:4] != b"TPF\0":
         raise FormatError("expected a PC TPF header and texture entry")
-    texture_count = struct.unpack_from("<I", data, 8)[0]
+    count = struct.unpack_from("<I", data, 8)[0]
     if data[12] != 0:
         raise FormatError(f"unsupported TPF platform {data[12]}; expected PC")
-    if texture_count != 1:
-        raise FormatError(f"expected exactly one TPF texture, found {texture_count}")
-    offset, size = struct.unpack_from("<II", data, 16)
-    if offset < 36 or size < 128 or offset + size > len(data):
+    if count == 0 or 16 + count * 20 > len(data):
+        raise FormatError("invalid TPF texture count or truncated entry table")
+    return count
+
+
+def extract_dds(data: bytes, index: int = 0) -> bytes:
+    count = texture_count(data)
+    if not 0 <= index < count:
+        raise FormatError(f"TPF texture index {index} is out of range")
+    entry = 16 + index * 20
+    if data[entry + 19] != 0:
+        raise FormatError(f"unsupported TPF texture flags {data[entry + 19]}")
+    offset, size = struct.unpack_from("<II", data, entry)
+    if offset < 16 + count * 20 or size < 128 or offset + size > len(data):
         raise FormatError("TPF texture offset or size is invalid")
     dds = data[offset:offset + size]
     if dds[:4] != b"DDS ":
@@ -89,12 +99,16 @@ def extract_dds(data: bytes) -> bytes:
     return dds
 
 
-def convert(source: Path, destination: Path, library: str) -> None:
-    if source.resolve() == destination.resolve():
-        raise FormatError("input and output must be different files")
+def write_png(dds: bytes, destination: Path) -> None:
     if destination.exists():
         raise FormatError(f"output already exists; skipping: {destination}")
-    dds = extract_dds(decompress_dcx(source.read_bytes(), library))
+    if len(dds) >= 148 and dds[84:88] == b"DX10":
+        dxgi_format = struct.unpack_from("<I", dds, 128)[0]
+        if dxgi_format == 72:
+            # BC1 sRGB has identical block encoding to BC1 UNORM.
+            header = bytearray(dds[:148])
+            struct.pack_into("<I", header, 128, 71)
+            dds = bytes(header) + dds[148:]
     try:
         with Image.open(io.BytesIO(dds)) as image:
             if image.format != "DDS":
@@ -103,7 +117,7 @@ def convert(source: Path, destination: Path, library: str) -> None:
             image.convert("RGBA").save(output, format="PNG")
         with destination.open("xb") as file:
             file.write(output.getvalue())
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except (UnidentifiedImageError, OSError, ValueError, NotImplementedError) as exc:
         if isinstance(exc, FormatError):
             raise
         if isinstance(exc, FileExistsError):
@@ -111,6 +125,27 @@ def convert(source: Path, destination: Path, library: str) -> None:
                 f"output already exists; skipping: {destination}"
             ) from exc
         raise FormatError(f"cannot decode DDS or write PNG: {exc}") from exc
+
+
+def convert(source: Path, destination: Path, library: str) -> None:
+    if source.resolve() == destination.resolve():
+        raise FormatError("input and output must be different files")
+    data = decompress_dcx(source.read_bytes(), library)
+    count = texture_count(data)
+    errors = []
+    for index in range(count):
+        output = (destination if count == 1 else
+                  destination.with_name(f"{destination.stem}_{index}.png"))
+        try:
+            if source.resolve() == output.resolve():
+                raise FormatError("input and output must be different files")
+            write_png(extract_dds(data, index), output)
+        except (OSError, FormatError) as exc:
+            errors.append(f"texture {index} ({output}): {exc}")
+            continue
+        print(f"Wrote {output}")
+    if errors:
+        raise FormatError("\n".join(errors))
 
 
 def decompress_binder(source: Path, destination: Path, library: str) -> None:
@@ -190,7 +225,8 @@ def convert_directory(source_dir: Path, output_dir: Path, library: str,
                 print(f"rannirune: {source}: {exc}", file=sys.stderr)
                 failed = True
                 continue
-            print(f"Wrote {destination}")
+            if convert_file is decompress_binder:
+                print(f"Wrote {destination}")
     return int(failed)
 
 
@@ -229,7 +265,8 @@ def main() -> int:
     except (OSError, FormatError) as exc:
         print(f"rannirune: {exc}", file=sys.stderr)
         return 1
-    print(f"Wrote {output}")
+    if convert_file is decompress_binder:
+        print(f"Wrote {output}")
     return 0
 
 

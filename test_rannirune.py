@@ -18,6 +18,23 @@ def tpf(payload: bytes = b"DDS " + bytes(124)) -> bytes:
     return bytes(header) + payload
 
 
+def multi_tpf(payloads: list[bytes]) -> bytes:
+    header = bytearray(16 + 20 * len(payloads))
+    header[:4] = b"TPF\0"
+    struct.pack_into("<I", header, 8, len(payloads))
+    offset = len(header)
+    for index, payload in enumerate(payloads):
+        struct.pack_into("<II", header, 16 + index * 20, offset, len(payload))
+        offset += len(payload)
+    return bytes(header) + b"".join(payloads)
+
+
+def dds_image() -> bytes:
+    output = io.BytesIO()
+    rannirune.Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(output, format="DDS")
+    return output.getvalue()
+
+
 class FormatTests(unittest.TestCase):
     def test_omitting_oodle_uses_elden_ring_steam_install(self):
         expected_library = (
@@ -75,8 +92,9 @@ class FormatTests(unittest.TestCase):
             destination = Path(temp_dir) / "input.png"
             source.write_bytes(b"not decoded")
             destination.write_bytes(b"keep this")
-            with self.assertRaisesRegex(rannirune.FormatError, "output already exists"):
-                rannirune.convert(source, destination, "unused")
+            with patch("rannirune.decompress_dcx", return_value=tpf(dds_image())):
+                with self.assertRaisesRegex(rannirune.FormatError, "output already exists"):
+                    rannirune.convert(source, destination, "unused")
             self.assertEqual(destination.read_bytes(), b"keep this")
 
     def test_directory_processes_remaining_files_after_errors(self):
@@ -93,6 +111,7 @@ class FormatTests(unittest.TestCase):
             def convert(source, destination, library):
                 if source.name == "a.tpf.dcx":
                     raise rannirune.FormatError("bad input")
+                print(f"Wrote {destination}")
 
             with patch("sys.argv", [
                 "rannirune.py", str(source_dir), "-o", str(output_dir)
@@ -238,11 +257,67 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(rannirune.extract_dds(tpf()), b"DDS " + bytes(124))
 
     def test_rejects_bad_texture_count_and_platform(self):
-        for offset, value in ((8, 2), (12, 1)):
+        for offset, value in ((8, 0), (12, 1)):
             data = bytearray(tpf())
             data[offset] = value
             with self.subTest(offset=offset), self.assertRaises(rannirune.FormatError):
                 rannirune.extract_dds(bytes(data))
+
+    def test_exports_multiple_textures_with_indices_and_preserves_existing_output(self):
+        temp_root = Path(__file__).parent / "tmp"
+        temp_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
+            source = Path(temp_dir) / "input.tpf.dcx"
+            destination = Path(temp_dir) / "custom.png"
+            source.write_bytes(b"compressed")
+            existing = Path(temp_dir) / "custom_1.png"
+            existing.write_bytes(b"keep this")
+            data = multi_tpf([dds_image()] * 3)
+            with patch("rannirune.decompress_dcx", return_value=data):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(rannirune.FormatError, "texture 1"):
+                        rannirune.convert(source, destination, "unused")
+            for index in (0, 2):
+                with rannirune.Image.open(Path(temp_dir) / f"custom_{index}.png") as image:
+                    self.assertEqual(image.size, (4, 4))
+                    self.assertEqual(image.getpixel((0, 0)), (255, 0, 0, 255))
+            self.assertEqual(existing.read_bytes(), b"keep this")
+            self.assertFalse(destination.exists())
+
+    def test_unsupported_dds_and_invalid_entries_do_not_stop_other_textures(self):
+        temp_root = Path(__file__).parent / "tmp"
+        temp_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
+            source_dir = Path(temp_dir) / "input"
+            output_dir = Path(temp_dir) / "output"
+            source_dir.mkdir()
+            (source_dir / "a.tpf.dcx").write_bytes(b"input")
+            (source_dir / "b.tpf.dcx").write_bytes(b"input")
+            valid = dds_image()
+            data = multi_tpf([b"BAD " + bytes(124), valid, valid])
+            stderr = io.StringIO()
+            real_open = rannirune.Image.open
+            calls = 0
+
+            def open_image(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise NotImplementedError("Unimplemented DXGI format 999")
+                return real_open(*args, **kwargs)
+
+            with patch("rannirune.decompress_dcx", side_effect=[data, tpf(valid)]):
+                with patch("rannirune.Image.open", side_effect=open_image):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with contextlib.redirect_stderr(stderr):
+                            self.assertEqual(
+                                rannirune.convert_directory(source_dir, output_dir, "unused"),
+                                1,
+                            )
+            self.assertTrue((output_dir / "a_2.png").is_file())
+            self.assertTrue((output_dir / "b.png").is_file())
+            self.assertIn("texture 0", stderr.getvalue())
+            self.assertIn("Unimplemented DXGI format 999", stderr.getvalue())
 
     def test_rejects_out_of_bounds_or_wrong_magic(self):
         data = bytearray(tpf())
