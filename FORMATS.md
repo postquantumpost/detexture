@@ -26,9 +26,12 @@ input tree is excluded from traversal. Directory symlinks are not followed.
 For a single
 file, use `-o C:\path\to\output.png` to choose the destination. Existing
 outputs are never overwritten and are reported as skipped. A
-`.matbinbnd.dcx` and `.partsbnd.dcx` files are decompressed to their BND4 binder
-payloads, with the `.dcx` suffix removed; this does not convert their contents
-to images. `--oodle`
+`.matbinbnd.dcx` file is decompressed to its BND4 binder payload, with the
+`.dcx` suffix removed. `.partsbnd` and `.partsbnd.dcx` files are searched for
+PC TPF entries in their BND4 binder, then each embedded texture is written as
+a PNG. A multi-image binder produces files such as `name_0.png` and
+`name_1.png`; `-o` names the single-image output or the base for those numbered
+outputs. Raw `.matbinbnd` BND4 binders are preserved unchanged. `--oodle`
 can be omitted if `OODLE_LIBRARY` names the library. Otherwise the default is
 `%ProgramFiles(x86)%\Steam\steamapps\common\ELDEN RING\Game\oo2core_6_win64.dll`
 (with `C:\Program Files (x86)` used if `ProgramFiles(x86)` is unset). Use
@@ -61,13 +64,17 @@ uncompressed size is capped at 512 MiB. The declared compressed byte count
 cannot exceed the remaining file data; any trailing bytes outside that payload
 are ignored.
 
-### BND4 material binder
+### BND4 binder
 
 `samples/allmaterial.matbinbnd.dcx` decompresses to a `BND4` binder. Its
 declared Oodle payload is 9 bytes shorter than the bytes remaining after the
-DCX header, so those trailing bytes are not passed to Oodle. This is a material
-container, not a texture file; the program preserves its decompressed BND4
-payload rather than attempting to create a PNG.
+DCX header, so those trailing bytes are not passed to Oodle. Raw part binders
+begin with `BND4`; the observed little-endian header gives a file count at
+`0x0c` and file-header table offset at `0x10`. The supported file headers use
+the `0x40` flags layout, with 64-bit sizes and 32-bit data offsets. Entries
+containing a PC `TPF\0` payload are passed to the TPF texture extractor; other
+binder entries, such as FLVER models, are ignored. Other BND4 header variants
+and compressed binder entries are not supported for image extraction.
 
 ### TPF
 

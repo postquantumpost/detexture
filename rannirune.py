@@ -127,10 +127,7 @@ def write_png(dds: bytes, destination: Path) -> None:
         raise FormatError(f"cannot decode DDS or write PNG: {exc}") from exc
 
 
-def convert(source: Path, destination: Path, library: str) -> None:
-    if source.resolve() == destination.resolve():
-        raise FormatError("input and output must be different files")
-    data = decompress_dcx(source.read_bytes(), library)
+def write_tpf_images(data: bytes, source: Path, destination: Path) -> None:
     count = texture_count(data)
     errors = []
     for index in range(count):
@@ -148,6 +145,76 @@ def convert(source: Path, destination: Path, library: str) -> None:
         raise FormatError("\n".join(errors))
 
 
+def convert(source: Path, destination: Path, library: str) -> None:
+    if source.resolve() == destination.resolve():
+        raise FormatError("input and output must be different files")
+    data = decompress_dcx(source.read_bytes(), library)
+    write_tpf_images(data, source, destination)
+
+
+def binder_tpf_entries(binder: bytes) -> list[bytes]:
+    if len(binder) < 64 or binder[:4] != b"BND4":
+        raise FormatError("input is not a BND4 binder")
+    if binder[4] != 0:
+        raise FormatError("unsupported big-endian BND4 binder")
+    file_count = struct.unpack_from("<I", binder, 12)[0]
+    header_size = struct.unpack_from("<I", binder, 16)[0]
+    entry_size = 36
+    if (header_size < 64 or header_size > len(binder)
+            or file_count > (len(binder) - header_size) // entry_size):
+        raise FormatError("invalid BND4 header or file table")
+
+    textures = []
+    for index in range(file_count):
+        entry = header_size + index * entry_size
+        flags = struct.unpack_from("<I", binder, entry)[0]
+        if flags != 0x40:
+            raise FormatError(f"unsupported BND4 file entry flags 0x{flags:x}")
+        compressed_size, uncompressed_size = struct.unpack_from(
+            "<QQ", binder, entry + 8
+        )
+        offset = struct.unpack_from("<I", binder, entry + 24)[0]
+        if (offset > len(binder) or compressed_size > len(binder) - offset
+                or uncompressed_size != compressed_size):
+            raise FormatError("unsupported or invalid BND4 file entry size")
+        payload = binder[offset:offset + compressed_size]
+        if payload.startswith(b"TPF\0"):
+            textures.append(payload)
+    if not textures:
+        raise FormatError("BND4 binder contains no supported TPF textures")
+    return textures
+
+
+def convert_partsbnd(source: Path, destination: Path, library: str) -> None:
+    if source.resolve() == destination.resolve():
+        raise FormatError("input and output must be different files")
+    data = source.read_bytes()
+    if data.startswith(b"DCX\0"):
+        data = decompress_dcx(data, library)
+    textures = binder_tpf_entries(data)
+    counts = [texture_count(texture) for texture in textures]
+    image_count = sum(counts)
+    errors = []
+    image_index = 0
+    for texture, count in zip(textures, counts):
+        for texture_index in range(count):
+            output = (destination if image_count == 1 else
+                      destination.with_name(
+                          f"{destination.stem}_{image_index}.png"
+                      ))
+            try:
+                if source.resolve() == output.resolve():
+                    raise FormatError("input and output must be different files")
+                write_png(extract_dds(texture, texture_index), output)
+            except (OSError, FormatError) as exc:
+                errors.append(f"texture {image_index} ({output}): {exc}")
+            else:
+                print(f"Wrote {output}")
+            image_index += 1
+    if errors:
+        raise FormatError("\n".join(errors))
+
+
 def decompress_binder(source: Path, destination: Path, library: str) -> None:
     if source.resolve() == destination.resolve():
         raise FormatError("input and output must be different files")
@@ -156,6 +223,23 @@ def decompress_binder(source: Path, destination: Path, library: str) -> None:
     binder = decompress_dcx(source.read_bytes(), library)
     if not binder.startswith(b"BND4"):
         raise FormatError("decompressed file is not a BND4 binder")
+    try:
+        with destination.open("xb") as file:
+            file.write(binder)
+    except FileExistsError as exc:
+        raise FormatError(
+            f"output already exists; skipping: {destination}"
+        ) from exc
+
+
+def preserve_binder(source: Path, destination: Path, _library: str) -> None:
+    binder = source.read_bytes()
+    if not binder.startswith(b"BND4"):
+        raise FormatError("input is not a BND4 binder")
+    if source.resolve() == destination.resolve():
+        return
+    if destination.exists():
+        raise FormatError(f"output already exists; skipping: {destination}")
     try:
         with destination.open("xb") as file:
             file.write(binder)
@@ -211,9 +295,22 @@ def convert_directory(source_dir: Path, output_dir: Path, library: str,
             if lower_name.endswith(".tpf.dcx"):
                 destination = destination_dir / (name[:-8] + ".png")
                 convert_file = convert
-            elif lower_name.endswith((".matbinbnd.dcx", ".partsbnd.dcx")):
+            elif lower_name.endswith(".matbinbnd.dcx"):
                 destination = destination_dir / name[:-4]
                 convert_file = decompress_binder
+            elif lower_name.endswith(".partsbnd.dcx"):
+                destination = destination_dir / (
+                    name[:-len(".partsbnd.dcx")] + ".png"
+                )
+                convert_file = convert_partsbnd
+            elif lower_name.endswith(".matbinbnd"):
+                destination = destination_dir / name
+                convert_file = preserve_binder
+            elif lower_name.endswith(".partsbnd"):
+                destination = destination_dir / (
+                    name[:-len(".partsbnd")] + ".png"
+                )
+                convert_file = convert_partsbnd
             else:
                 print(f"rannirune: {source}: unsupported file format; skipping",
                       file=sys.stderr)
@@ -227,13 +324,18 @@ def convert_directory(source_dir: Path, output_dir: Path, library: str,
                 continue
             if convert_file is decompress_binder:
                 print(f"Wrote {destination}")
+            elif convert_file is preserve_binder:
+                if source.resolve() == destination.resolve():
+                    print(f"Already a BND4 binder: {source}")
+                else:
+                    print(f"Wrote {destination}")
     return int(failed)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path,
-                        help="input .tpf.dcx, .matbinbnd.dcx, .partsbnd.dcx file, "
+                        help="input .tpf.dcx, .matbinbnd[.dcx], .partsbnd[.dcx] file, "
                              "or directory (processed recursively)")
     outputs = parser.add_mutually_exclusive_group()
     outputs.add_argument("-o", "--output", type=Path,
@@ -252,12 +354,25 @@ def main() -> int:
     if lower_name.endswith(".tpf.dcx"):
         output = args.output or args.input.with_name(name[:-8] + ".png")
         convert_file = convert
-    elif lower_name.endswith((".matbinbnd.dcx", ".partsbnd.dcx")):
+    elif lower_name.endswith(".matbinbnd.dcx"):
         output = args.output or args.input.with_name(name[:-4])
         convert_file = decompress_binder
+    elif lower_name.endswith(".partsbnd.dcx"):
+        output = args.output or args.input.with_name(
+            name[:-len(".partsbnd.dcx")] + ".png"
+        )
+        convert_file = convert_partsbnd
+    elif lower_name.endswith(".matbinbnd"):
+        output = args.output or args.input
+        convert_file = preserve_binder
+    elif lower_name.endswith(".partsbnd"):
+        output = args.output or args.input.with_name(
+            name[:-len(".partsbnd")] + ".png"
+        )
+        convert_file = convert_partsbnd
     else:
         parser.error(
-            "input must be a .tpf.dcx, .matbinbnd.dcx, or .partsbnd.dcx file"
+            "input must be a .tpf.dcx, .matbinbnd[.dcx], or .partsbnd[.dcx] file"
         )
     if args.o2 is not None:
         output = args.o2 / output.name
@@ -270,6 +385,11 @@ def main() -> int:
         return 1
     if convert_file is decompress_binder:
         print(f"Wrote {output}")
+    elif convert_file is preserve_binder:
+        if args.input.resolve() == output.resolve():
+            print(f"Already a BND4 binder: {args.input}")
+        else:
+            print(f"Wrote {output}")
     return 0
 
 

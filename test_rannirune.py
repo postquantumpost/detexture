@@ -29,6 +29,28 @@ def multi_tpf(payloads: list[bytes]) -> bytes:
     return bytes(header) + b"".join(payloads)
 
 
+def bnd4(files: list[tuple[str, bytes]]) -> bytes:
+    header_size = 64
+    entry_size = 36
+    names = [name.encode("utf-16le") + b"\0\0" for name, _ in files]
+    data_offset = header_size + entry_size * len(files) + sum(map(len, names))
+    header = bytearray(header_size)
+    header[:4] = b"BND4"
+    struct.pack_into("<II", header, 12, len(files), header_size)
+    entries = bytearray()
+    name_offset = header_size + entry_size * len(files)
+    payloads = bytearray()
+    for (_, payload), name in zip(files, names):
+        entries.extend(struct.pack(
+            "<IIQQIII", 0x40, 0, len(payload), len(payload),
+            data_offset, 0, name_offset,
+        ))
+        name_offset += len(name)
+        data_offset += len(payload)
+        payloads.extend(payload)
+    return bytes(header + entries + b"".join(names) + payloads)
+
+
 def dds_image() -> bytes:
     output = io.BytesIO()
     rannirune.Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(output, format="DDS")
@@ -86,32 +108,81 @@ class FormatTests(unittest.TestCase):
                     rannirune.decompress_binder(source, destination, "unused")
             self.assertEqual(destination.read_bytes(), b"BND4payload")
 
-    def test_single_partsbnd_input_uses_binder_output_name(self):
-        source = Path("fc_f_0000.partsbnd.dcx")
-        destination = Path("fc_f_0000.partsbnd")
+    def test_single_partsbnd_input_uses_image_output_name(self):
+        source = Path("fc_f_0000.partsbnd")
+        destination = Path("fc_f_0000.png")
         with patch("sys.argv", ["rannirune.py", str(source)]):
-            with patch("rannirune.decompress_binder") as decompress_binder:
+            with patch("rannirune.convert_partsbnd") as convert_partsbnd:
                 self.assertEqual(rannirune.main(), 0)
-        decompress_binder.assert_called_once_with(
+        convert_partsbnd.assert_called_once_with(
             source, destination, rannirune.os.environ.get(
                 "OODLE_LIBRARY", rannirune.default_oodle_library()
             )
         )
 
-    def test_directory_processes_partsbnd_as_binder(self):
+    def test_single_dcx_partsbnd_input_uses_image_output_name(self):
+        source = Path("fc_f_0000.partsbnd.dcx")
+        destination = Path("fc_f_0000.png")
+        with patch("sys.argv", ["rannirune.py", str(source)]):
+            with patch("rannirune.convert_partsbnd") as convert_partsbnd:
+                self.assertEqual(rannirune.main(), 0)
+        convert_partsbnd.assert_called_once_with(
+            source, destination, rannirune.os.environ.get(
+                "OODLE_LIBRARY", rannirune.default_oodle_library()
+            )
+        )
+
+    def test_directory_processes_partsbnd_as_images(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source_dir = Path(temp_dir) / "input"
             output_dir = Path(temp_dir) / "output"
             source_dir.mkdir()
-            source = source_dir / "fc_f_0000.partsbnd.dcx"
+            source = source_dir / "fc_f_0000.partsbnd"
             source.write_bytes(b"compressed")
-            with patch("rannirune.decompress_binder") as decompress_binder:
+            with patch("rannirune.convert_partsbnd") as convert_partsbnd:
                 self.assertEqual(
                     rannirune.convert_directory(source_dir, output_dir, "unused"), 0
                 )
-            decompress_binder.assert_called_once_with(
-                source, output_dir / "fc_f_0000.partsbnd", "unused"
+            convert_partsbnd.assert_called_once_with(
+                source, output_dir / "fc_f_0000.png", "unused"
             )
+
+    def test_converts_raw_partsbnd_textures_to_images(self):
+        temp_root = Path(__file__).parent / "tmp"
+        temp_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
+            source = Path(temp_dir) / "fc_f_0000.partsbnd"
+            destination = Path(temp_dir) / "fc_f_0000.png"
+            binder = bnd4([
+                ("FC_F_0000.flver", b"FLVERpayload"),
+                ("FC_F_0000.tpf", multi_tpf([dds_image(), dds_image()])),
+            ])
+            source.write_bytes(binder)
+            stdout = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout):
+                rannirune.convert_partsbnd(source, destination, "unused")
+
+            for index in range(2):
+                with rannirune.Image.open(
+                    Path(temp_dir) / f"fc_f_0000_{index}.png"
+                ) as image:
+                    self.assertEqual(image.size, (4, 4))
+            self.assertEqual(stdout.getvalue().count("Wrote"), 2)
+
+    def test_converts_dcx_partsbnd_textures_to_images(self):
+        temp_root = Path(__file__).parent / "tmp"
+        temp_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
+            source = Path(temp_dir) / "fc_f_0000.partsbnd.dcx"
+            destination = Path(temp_dir) / "fc_f_0000.png"
+            source.write_bytes(b"DCX\0compressed")
+            binder = bnd4([
+                ("FC_F_0000.tpf", multi_tpf([dds_image()])),
+            ])
+            with patch("rannirune.decompress_dcx", return_value=binder):
+                rannirune.convert_partsbnd(source, destination, "unused")
+            self.assertTrue(destination.is_file())
 
     def test_existing_output_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as temp_dir:
