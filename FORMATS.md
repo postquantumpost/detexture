@@ -12,9 +12,18 @@ python rannirune.py 00_solo-tpfbdt\MENU_Knowledge_00001.tpf.dcx --oodle C:\path\
 ```
 
 By default the PNG is written next to the input, replacing `.tpf.dcx` with
-`.png`. Pass a directory to process its files in name order; unsupported or
-failed files are reported and processing continues. For directory input, use
-`-o C:\path\to\output-folder` to choose the output directory. For a single
+`.png`. Pass a directory to process its files in name order, then recursively
+process its child directories in name order. Unsupported or failed files are
+reported and processing continues. For directory input, use
+`-o C:\path\to\output-folder` to choose the output directory; the input's
+subdirectory structure is preserved. Alternatively, use
+`-o2 C:\path\to\output-folder` to put all outputs directly in one directory,
+without preserving subdirectories. `-o` and `-o2` cannot be combined.
+`-o2` also accepts single-file inputs and uses the default output filename.
+If filenames collide, the first output is kept and later ones are reported
+as skipped; processing continues with a nonzero exit status. A separate output directory inside the
+input tree is excluded from traversal. Directory symlinks are not followed.
+For a single
 file, use `-o C:\path\to\output.png` to choose the destination. Existing
 outputs are never overwritten and are reported as skipped. A
 `.matbinbnd.dcx` file is decompressed to its BND4 binder payload, with the

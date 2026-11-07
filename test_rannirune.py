@@ -108,6 +108,132 @@ class FormatTests(unittest.TestCase):
             self.assertIn(str(output_dir / "b.png"), stdout.getvalue())
             self.assertTrue(output_dir.is_dir())
 
+    def test_recursive_directory_processes_files_before_children_after_errors(self):
+        temp_root = Path(__file__).parent / "tmp"
+        temp_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
+            source_dir = Path(temp_dir) / "input"
+            output_dir = Path(temp_dir) / "output"
+            (source_dir / "a" / "nested").mkdir(parents=True)
+            (source_dir / "b").mkdir()
+            relative_sources = [
+                Path("z.tpf.dcx"),
+                Path("a") / "a.tpf.dcx",
+                Path("a") / "nested" / "binder.matbinbnd.dcx",
+                Path("b") / "b.tpf.dcx",
+            ]
+            for relative in relative_sources:
+                (source_dir / relative).write_bytes(b"input")
+            processed = []
+
+            def convert(source, destination, library):
+                processed.append(source.relative_to(source_dir))
+                if source.name == "a.tpf.dcx":
+                    raise rannirune.FormatError("bad child input")
+                self.assertTrue(destination.parent.is_dir())
+
+            stderr = io.StringIO()
+            with patch("rannirune.convert", side_effect=convert):
+                with patch("rannirune.decompress_binder", side_effect=convert):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with contextlib.redirect_stderr(stderr):
+                            self.assertEqual(
+                                rannirune.convert_directory(source_dir, output_dir, "unused"),
+                                1,
+                            )
+            self.assertEqual(processed, relative_sources)
+            self.assertIn("bad child input", stderr.getvalue())
+            self.assertTrue((output_dir / "a" / "nested").is_dir())
+            self.assertTrue((output_dir / "b").is_dir())
+
+    def test_recursive_directory_excludes_output_inside_input_tree(self):
+        temp_root = Path(__file__).parent / "tmp"
+        temp_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
+            source_dir = Path(temp_dir)
+            output_dir = source_dir / "child" / "output"
+            output_dir.mkdir(parents=True)
+            source = source_dir / "child" / "input.tpf.dcx"
+            source.write_bytes(b"input")
+            (output_dir / "ignore.tpf.dcx").write_bytes(b"already in output")
+            with patch("rannirune.convert") as convert:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(
+                        rannirune.convert_directory(source_dir, output_dir, "unused"), 0
+                    )
+            convert.assert_called_once_with(
+                source, output_dir / "child" / "input.png", "unused"
+            )
+
+    def test_recursive_in_place_binder_preserves_existing_outputs(self):
+        temp_root = Path(__file__).parent / "tmp"
+        temp_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
+            source_dir = Path(temp_dir)
+            child = source_dir / "child"
+            child.mkdir()
+            (child / "a.matbinbnd.dcx").write_bytes(b"compressed")
+            (child / "a.matbinbnd").write_bytes(b"keep this")
+            (child / "b.matbinbnd.dcx").write_bytes(b"compressed")
+            stderr = io.StringIO()
+            with patch("rannirune.decompress_dcx", return_value=b"BND4payload"):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with contextlib.redirect_stderr(stderr):
+                        self.assertEqual(
+                            rannirune.convert_directory(source_dir, source_dir, "unused"), 1
+                        )
+            self.assertEqual((child / "a.matbinbnd").read_bytes(), b"keep this")
+            self.assertEqual((child / "b.matbinbnd").read_bytes(), b"BND4payload")
+            self.assertIn("output already exists", stderr.getvalue())
+
+    def test_o2_flattens_outputs_and_continues_after_name_collision(self):
+        temp_root = Path(__file__).parent / "tmp"
+        temp_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
+            source_dir = Path(temp_dir)
+            output_dir = source_dir / "output"
+            (source_dir / "child").mkdir()
+            (source_dir / "same.matbinbnd.dcx").write_bytes(b"root")
+            (source_dir / "child" / "same.matbinbnd.dcx").write_bytes(b"duplicate")
+            (source_dir / "child" / "unique.tpf.dcx").write_bytes(b"texture")
+            stderr = io.StringIO()
+            with patch("sys.argv", ["rannirune.py", str(source_dir),
+                                    "-o2", str(output_dir)]):
+                with patch("rannirune.decompress_dcx", return_value=b"BND4root"):
+                    with patch("rannirune.convert") as convert:
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            with contextlib.redirect_stderr(stderr):
+                                self.assertEqual(rannirune.main(), 1)
+            self.assertEqual((output_dir / "same.matbinbnd").read_bytes(), b"BND4root")
+            convert.assert_called_once_with(
+                source_dir / "child" / "unique.tpf.dcx",
+                output_dir / "unique.png",
+                rannirune.os.environ.get("OODLE_LIBRARY", rannirune.default_oodle_library()),
+            )
+            self.assertFalse((output_dir / "child").exists())
+            self.assertIn("output already exists", stderr.getvalue())
+
+    def test_o2_single_file_creates_destination_directory(self):
+        temp_root = Path(__file__).parent / "tmp"
+        temp_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
+            source = Path(temp_dir) / "input.tpf.dcx"
+            output_dir = Path(temp_dir) / "output"
+            with patch("sys.argv", ["rannirune.py", str(source), "-o2", str(output_dir)]):
+                with patch("rannirune.convert") as convert:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(rannirune.main(), 0)
+            self.assertEqual(convert.call_args.args[:2], (source, output_dir / "input.png"))
+            self.assertTrue(output_dir.is_dir())
+
+    def test_o_and_o2_are_mutually_exclusive(self):
+        with patch("sys.argv", ["rannirune.py", "input.tpf.dcx",
+                                "-o", "output.png", "-o2", "output"]):
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    rannirune.main()
+        self.assertEqual(error.exception.code, 2)
+
     def test_extracts_dds_at_entry_offset(self):
         self.assertEqual(rannirune.extract_dds(tpf()), b"DDS " + bytes(124))
 

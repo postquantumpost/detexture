@@ -130,46 +130,85 @@ def decompress_binder(source: Path, destination: Path, library: str) -> None:
         ) from exc
 
 
-def convert_directory(source_dir: Path, output_dir: Path, library: str) -> int:
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        sources = sorted(path for path in source_dir.iterdir() if path.is_file())
-    except OSError as exc:
+def convert_directory(source_dir: Path, output_dir: Path, library: str,
+                      flat: bool = False) -> int:
+    failed = False
+
+    def report_error(exc: OSError) -> None:
+        nonlocal failed
         print(f"rannirune: {exc}", file=sys.stderr)
+        failed = True
+
+    try:
+        output_root = output_dir.resolve()
+        input_root = source_dir.resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        report_error(exc)
         return 1
 
-    failed = False
-    for source in sources:
-        lower_name = source.name.lower()
-        if lower_name.endswith(".tpf.dcx"):
-            destination = output_dir / (source.name[:-8] + ".png")
-            convert_file = convert
-        elif lower_name.endswith(".matbinbnd.dcx"):
-            destination = output_dir / source.name[:-4]
-            convert_file = decompress_binder
-        else:
-            print(f"rannirune: {source}: unsupported file format; skipping", file=sys.stderr)
-            failed = True
-            continue
+    visited = set()
+    for directory, children, filenames in os.walk(source_dir, onerror=report_error):
+        current = Path(directory)
         try:
-            convert_file(source, destination, library)
-        except (OSError, FormatError) as exc:
-            print(f"rannirune: {source}: {exc}", file=sys.stderr)
-            failed = True
+            resolved = current.resolve()
+            if resolved in visited:
+                children.clear()
+                print(f"rannirune: {current}: directory already visited; skipping",
+                      file=sys.stderr)
+                failed = True
+                continue
+            visited.add(resolved)
+            children[:] = sorted(
+                name for name in children
+                if output_root == input_root or (current / name).resolve() != output_root
+            )
+            destination_dir = output_dir if flat else output_dir / current.relative_to(source_dir)
+            destination_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            report_error(exc)
+            children.clear()
             continue
-        print(f"Wrote {destination}")
+
+        for name in sorted(filenames):
+            source = current / name
+            lower_name = name.lower()
+            if lower_name.endswith(".tpf.dcx"):
+                destination = destination_dir / (name[:-8] + ".png")
+                convert_file = convert
+            elif lower_name.endswith(".matbinbnd.dcx"):
+                destination = destination_dir / name[:-4]
+                convert_file = decompress_binder
+            else:
+                print(f"rannirune: {source}: unsupported file format; skipping",
+                      file=sys.stderr)
+                failed = True
+                continue
+            try:
+                convert_file(source, destination, library)
+            except (OSError, FormatError) as exc:
+                print(f"rannirune: {source}: {exc}", file=sys.stderr)
+                failed = True
+                continue
+            print(f"Wrote {destination}")
     return int(failed)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", type=Path, help="input .tpf.dcx file or directory of files")
-    parser.add_argument("-o", "--output", type=Path,
-                        help="output file, or output directory when input is a directory")
+    parser.add_argument("input", type=Path,
+                        help="input .tpf.dcx file or directory (processed recursively)")
+    outputs = parser.add_mutually_exclusive_group()
+    outputs.add_argument("-o", "--output", type=Path,
+                         help="output file, or output directory preserving subdirectories")
+    outputs.add_argument("-o2", type=Path, metavar="DIRECTORY",
+                         help="output directory without preserving subdirectories")
     parser.add_argument("--oodle", default=os.environ.get("OODLE_LIBRARY", default_oodle_library()),
                         help="path to the Oodle library (or set OODLE_LIBRARY)")
     args = parser.parse_args()
     if args.input.is_dir():
+        if args.o2 is not None:
+            return convert_directory(args.input, args.o2, args.oodle, flat=True)
         return convert_directory(args.input, args.output or args.input, args.oodle)
     name = args.input.name
     lower_name = name.lower()
@@ -181,7 +220,11 @@ def main() -> int:
         convert_file = decompress_binder
     else:
         parser.error("input must be a .tpf.dcx or .matbinbnd.dcx file")
+    if args.o2 is not None:
+        output = args.o2 / output.name
     try:
+        if args.o2 is not None:
+            args.o2.mkdir(parents=True, exist_ok=True)
         convert_file(args.input, output, args.oodle)
     except (OSError, FormatError) as exc:
         print(f"rannirune: {exc}", file=sys.stderr)
