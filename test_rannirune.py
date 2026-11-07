@@ -1,4 +1,7 @@
+import contextlib
+import io
 import struct
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,6 +29,45 @@ class FormatTests(unittest.TestCase):
         convert.assert_called_once_with(
             Path("input.tpf.dcx"), Path("input.png"), expected_library
         )
+
+    def test_existing_output_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "input.tpf.dcx"
+            destination = Path(temp_dir) / "input.png"
+            source.write_bytes(b"not decoded")
+            destination.write_bytes(b"keep this")
+            with self.assertRaisesRegex(rannirune.FormatError, "output already exists"):
+                rannirune.convert(source, destination, "unused")
+            self.assertEqual(destination.read_bytes(), b"keep this")
+
+    def test_directory_processes_remaining_files_after_errors(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "input"
+            output_dir = Path(temp_dir) / "output"
+            source_dir.mkdir()
+            (source_dir / "a.tpf.dcx").write_bytes(b"")
+            (source_dir / "b.tpf.dcx").write_bytes(b"")
+            (source_dir / "notes.txt").write_text("unsupported")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            def convert(source, destination, library):
+                if source.name == "a.tpf.dcx":
+                    raise rannirune.FormatError("bad input")
+
+            with patch("sys.argv", [
+                "rannirune.py", str(source_dir), "-o", str(output_dir)
+            ]):
+                with patch("rannirune.convert", side_effect=convert) as convert_mock:
+                    with contextlib.redirect_stdout(stdout):
+                        with contextlib.redirect_stderr(stderr):
+                            self.assertEqual(rannirune.main(), 1)
+
+            self.assertEqual(convert_mock.call_count, 2)
+            self.assertIn("bad input", stderr.getvalue())
+            self.assertIn("unsupported file format", stderr.getvalue())
+            self.assertIn(str(output_dir / "b.png"), stdout.getvalue())
+            self.assertTrue(output_dir.is_dir())
 
     def test_extracts_dds_at_entry_offset(self):
         self.assertEqual(rannirune.extract_dds(tpf()), b"DDS " + bytes(124))

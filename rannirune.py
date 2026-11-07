@@ -92,26 +92,62 @@ def extract_dds(data: bytes) -> bytes:
 def convert(source: Path, destination: Path, library: str) -> None:
     if source.resolve() == destination.resolve():
         raise FormatError("input and output must be different files")
+    if destination.exists():
+        raise FormatError(f"output already exists; skipping: {destination}")
     dds = extract_dds(decompress_dcx(source.read_bytes(), library))
     try:
         with Image.open(io.BytesIO(dds)) as image:
             if image.format != "DDS":
                 raise FormatError("embedded texture is not a DDS image")
-            image.convert("RGBA").save(destination, format="PNG")
+            output = io.BytesIO()
+            image.convert("RGBA").save(output, format="PNG")
+        with destination.open("xb") as file:
+            file.write(output.getvalue())
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         if isinstance(exc, FormatError):
             raise
+        if isinstance(exc, FileExistsError):
+            raise FormatError(
+                f"output already exists; skipping: {destination}"
+            ) from exc
         raise FormatError(f"cannot decode DDS or write PNG: {exc}") from exc
+
+
+def convert_directory(source_dir: Path, output_dir: Path, library: str) -> int:
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        sources = sorted(path for path in source_dir.iterdir() if path.is_file())
+    except OSError as exc:
+        print(f"rannirune: {exc}", file=sys.stderr)
+        return 1
+
+    failed = False
+    for source in sources:
+        if not source.name.lower().endswith(".tpf.dcx"):
+            print(f"rannirune: {source}: unsupported file format; skipping", file=sys.stderr)
+            failed = True
+            continue
+        destination = output_dir / (source.name[:-8] + ".png")
+        try:
+            convert(source, destination, library)
+        except (OSError, FormatError) as exc:
+            print(f"rannirune: {source}: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        print(f"Wrote {destination}")
+    return int(failed)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", type=Path, help="input .tpf.dcx file")
+    parser.add_argument("input", type=Path, help="input .tpf.dcx file or directory of files")
     parser.add_argument("-o", "--output", type=Path,
-                        help="output PNG (default: input name without .tpf.dcx)")
+                        help="output PNG, or output directory when input is a directory")
     parser.add_argument("--oodle", default=os.environ.get("OODLE_LIBRARY", default_oodle_library()),
                         help="path to the Oodle library (or set OODLE_LIBRARY)")
     args = parser.parse_args()
+    if args.input.is_dir():
+        return convert_directory(args.input, args.output or args.input, args.oodle)
     name = args.input.name
     if not name.lower().endswith(".tpf.dcx"):
         parser.error("input must have a .tpf.dcx extension")
