@@ -86,6 +86,33 @@ class FormatTests(unittest.TestCase):
                     rannirune.decompress_binder(source, destination, "unused")
             self.assertEqual(destination.read_bytes(), b"BND4payload")
 
+    def test_single_partsbnd_input_uses_binder_output_name(self):
+        source = Path("fc_f_0000.partsbnd.dcx")
+        destination = Path("fc_f_0000.partsbnd")
+        with patch("sys.argv", ["rannirune.py", str(source)]):
+            with patch("rannirune.decompress_binder") as decompress_binder:
+                self.assertEqual(rannirune.main(), 0)
+        decompress_binder.assert_called_once_with(
+            source, destination, rannirune.os.environ.get(
+                "OODLE_LIBRARY", rannirune.default_oodle_library()
+            )
+        )
+
+    def test_directory_processes_partsbnd_as_binder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "input"
+            output_dir = Path(temp_dir) / "output"
+            source_dir.mkdir()
+            source = source_dir / "fc_f_0000.partsbnd.dcx"
+            source.write_bytes(b"compressed")
+            with patch("rannirune.decompress_binder") as decompress_binder:
+                self.assertEqual(
+                    rannirune.convert_directory(source_dir, output_dir, "unused"), 0
+                )
+            decompress_binder.assert_called_once_with(
+                source, output_dir / "fc_f_0000.partsbnd", "unused"
+            )
+
     def test_existing_output_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "input.tpf.dcx"

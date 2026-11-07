@@ -211,7 +211,7 @@ def convert_directory(source_dir: Path, output_dir: Path, library: str,
             if lower_name.endswith(".tpf.dcx"):
                 destination = destination_dir / (name[:-8] + ".png")
                 convert_file = convert
-            elif lower_name.endswith(".matbinbnd.dcx"):
+            elif lower_name.endswith((".matbinbnd.dcx", ".partsbnd.dcx")):
                 destination = destination_dir / name[:-4]
                 convert_file = decompress_binder
             else:
@@ -233,7 +233,8 @@ def convert_directory(source_dir: Path, output_dir: Path, library: str,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path,
-                        help="input .tpf.dcx file or directory (processed recursively)")
+                        help="input .tpf.dcx, .matbinbnd.dcx, .partsbnd.dcx file, "
+                             "or directory (processed recursively)")
     outputs = parser.add_mutually_exclusive_group()
     outputs.add_argument("-o", "--output", type=Path,
                          help="output file, or output directory preserving subdirectories")
@@ -251,11 +252,13 @@ def main() -> int:
     if lower_name.endswith(".tpf.dcx"):
         output = args.output or args.input.with_name(name[:-8] + ".png")
         convert_file = convert
-    elif lower_name.endswith(".matbinbnd.dcx"):
+    elif lower_name.endswith((".matbinbnd.dcx", ".partsbnd.dcx")):
         output = args.output or args.input.with_name(name[:-4])
         convert_file = decompress_binder
     else:
-        parser.error("input must be a .tpf.dcx or .matbinbnd.dcx file")
+        parser.error(
+            "input must be a .tpf.dcx, .matbinbnd.dcx, or .partsbnd.dcx file"
+        )
     if args.o2 is not None:
         output = args.o2 / output.name
     try:

@@ -26,8 +26,9 @@ input tree is excluded from traversal. Directory symlinks are not followed.
 For a single
 file, use `-o C:\path\to\output.png` to choose the destination. Existing
 outputs are never overwritten and are reported as skipped. A
-`.matbinbnd.dcx` file is decompressed to its BND4 binder payload, with the
-`.dcx` suffix removed; this does not convert its contents to an image. `--oodle`
+`.matbinbnd.dcx` and `.partsbnd.dcx` files are decompressed to their BND4 binder
+payloads, with the `.dcx` suffix removed; this does not convert their contents
+to images. `--oodle`
 can be omitted if `OODLE_LIBRARY` names the library. Otherwise the default is
 `%ProgramFiles(x86)%\Steam\steamapps\common\ELDEN RING\Game\oo2core_6_win64.dll`
 (with `C:\Program Files (x86)` used if `ProgramFiles(x86)` is unset). Use
